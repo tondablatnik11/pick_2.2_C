@@ -1,0 +1,11 @@
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"       # Moderní ostrá modrá (jako v PowerBI)
+backgroundColor = "#0e1117"    # Velmi tmavá modro-šedá (hlavní pozadí)
+secondaryBackgroundColor = "#1e293b" # Světlejší šedá (pro postranní panel a karty)
+textColor = "#f8fafc"          # Jasná, téměř bílá pro maximální čitelnost
+font = "sans serif"
+
+[layout]
+# Roztáhne aplikaci na celou šířku monitoru
+max_width = "100%"
