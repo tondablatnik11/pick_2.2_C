@@ -12,36 +12,77 @@ try:
 except AttributeError:
     fast_render = lambda f: f
 
+# ---------------------------------------------------------------------------
+# Konstanty směn
+# Směna A: 5:45–13:45  (+ časy před 5:45 = přesčas ranní, také A)
+# Směna B: 13:45–21:45
+# ---------------------------------------------------------------------------
+SHIFT_A_END = 13 * 60 + 45   # 825 min
+SHIFT_B_END = 21 * 60 + 45   # 1305 min
 
-def _get_shift(time_val: str) -> str:
-    """Určí směnu podle přesných časů 5:45-13:45 a 13:45-21:45."""
+
+def _add_one_hour(time_val) -> str:
+    """Přičte 1 hodinu k časovému stringu (HH:MM:SS nebo HHMMSS). Vrací HH:MM:SS."""
     if pd.isna(time_val):
-        return tr("Neznámá", "Unknown")
+        return time_val
     try:
         t_str = str(time_val).strip()
-        if len(t_str) == 8:
-            h, m, _ = map(int, t_str.split(':'))
-        elif len(t_str) == 6:
-            h, m = int(t_str[0:2]), int(t_str[2:4])
+        if ':' in t_str:
+            parts = t_str.split(':')
+            h, m = int(parts[0]), int(parts[1])
+            s = int(parts[2]) if len(parts) > 2 else 0
+        elif len(t_str) >= 6:
+            h, m, s = int(t_str[0:2]), int(t_str[2:4]), int(t_str[4:6])
         else:
-            return tr("Neznámá", "Unknown")
-        total_minutes = h * 60 + m
-        if 345 <= total_minutes < 825:
-            return tr("Ranní (5:45 - 13:45)", "Morning (5:45 - 13:45)")
-        elif 825 <= total_minutes < 1305:
-            return tr("Odpolední (13:45 - 21:45)", "Afternoon (13:45 - 21:45)")
-        else:
-            return tr("Noční / Mimo směnu", "Night / Off-shift")
+            return time_val
+        h = (h + 1) % 24
+        return f"{h:02d}:{m:02d}:{s:02d}"
     except (ValueError, TypeError):
-        return tr("Neznámá", "Unknown")
+        return time_val
 
 
-def _get_hour(time_val) -> int:
-    """Vrátí hodinu pro hodinový graf."""
+def _parse_minutes(time_val) -> int:
+    """Vrátí celkový počet minut od půlnoci, nebo -1 při chybě."""
     if pd.isna(time_val):
         return -1
     try:
         t_str = str(time_val).strip()
+        if ':' in t_str:
+            parts = t_str.split(':')
+            return int(parts[0]) * 60 + int(parts[1])
+        elif len(t_str) >= 6:
+            return int(t_str[0:2]) * 60 + int(t_str[2:4])
+    except (ValueError, TypeError):
+        pass
+    return -1
+
+
+def _get_shift(time_val: str) -> str:
+    """
+    Určí směnu A / B po přičtení +1 hodiny.
+    Směna A: 0:00–13:44 (včetně časů před 5:45 = přesčas)
+    Směna B: 13:45–21:44
+    Mimo:    21:45–23:59
+    """
+    corrected = _add_one_hour(time_val)
+    mins = _parse_minutes(corrected)
+    if mins < 0:
+        return tr("Neznámá", "Unknown")
+    if mins < SHIFT_A_END:
+        return "A"
+    elif mins < SHIFT_B_END:
+        return "B"
+    else:
+        return tr("Mimo směnu", "Off-shift")
+
+
+def _get_hour(time_val) -> int:
+    """Vrátí hodinu po přičtení +1h pro hodinový graf."""
+    corrected = _add_one_hour(time_val)
+    if pd.isna(corrected):
+        return -1
+    try:
+        t_str = str(corrected).strip()
         if ':' in t_str:
             return int(t_str.split(':')[0])
         elif len(t_str) >= 6:
@@ -49,6 +90,73 @@ def _get_hour(time_val) -> int:
     except (ValueError, TypeError):
         pass
     return -1
+
+
+def _shift_comparison_section(pick_df: pd.DataFrame, pack_df: pd.DataFrame,
+                               hc_a_pick: float, hc_a_pack: float,
+                               hc_b_pick: float, hc_b_pack: float):
+    """Vykreslí sekci porovnání směn A vs B – graf + tabulka."""
+    st.markdown(f"#### 🔄 {tr('Porovnání směn A vs B', 'Shift Comparison A vs B')}")
+
+    a_pick = len(pick_df[pick_df['Shift'] == 'A']) if not pick_df.empty else 0
+    b_pick = len(pick_df[pick_df['Shift'] == 'B']) if not pick_df.empty else 0
+    a_pack = len(pack_df[pack_df['Shift'] == 'A']) if not pack_df.empty else 0
+    b_pack = len(pack_df[pack_df['Shift'] == 'B']) if not pack_df.empty else 0
+
+    if a_pick + b_pick + a_pack + b_pack == 0:
+        st.info(tr("Žádná data pro porovnání směn.", "No data for shift comparison."))
+        return
+
+    # --- Graf ---
+    df_cmp = pd.DataFrame([
+        {'Shift': 'A', 'Process': tr('Pick (TO)', 'Pick (TO)'), 'Count': a_pick},
+        {'Shift': 'B', 'Process': tr('Pick (TO)', 'Pick (TO)'), 'Count': b_pick},
+        {'Shift': 'A', 'Process': tr('Pack (HU)', 'Pack (HU)'), 'Count': a_pack},
+        {'Shift': 'B', 'Process': tr('Pack (HU)', 'Pack (HU)'), 'Count': b_pack},
+    ])
+    fig = px.bar(
+        df_cmp, x='Shift', y='Count', color='Process', barmode='group',
+        color_discrete_map={
+            tr('Pick (TO)', 'Pick (TO)'): '#3b82f6',
+            tr('Pack (HU)', 'Pack (HU)'): '#8b5cf6'
+        },
+        labels={
+            'Shift':   tr('Směna', 'Shift'),
+            'Count':   tr('Počet', 'Count'),
+            'Process': tr('Proces', 'Process')
+        },
+        text_auto=True,
+        template='plotly_white'
+    )
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(size=13, family="Inter, sans-serif"),
+        margin=dict(l=0, r=0, t=30, b=0)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # --- Tabulka ---
+    def _prod(val, hc):
+        return f"{val / hc:.1f}" if hc > 0 else "–"
+
+    tbl = pd.DataFrame([
+        {
+            tr('Směna', 'Shift'): 'A  ☀️  (5:45–13:45)',
+            tr('Pick (TO)', 'Pick (TO)'): a_pick,
+            tr('Pick / hlava', 'Pick / head'): _prod(a_pick, hc_a_pick),
+            tr('Pack (HU)', 'Pack (HU)'): a_pack,
+            tr('Pack / hlava', 'Pack / head'): _prod(a_pack, hc_a_pack),
+        },
+        {
+            tr('Směna', 'Shift'): 'B  🌆  (13:45–21:45)',
+            tr('Pick (TO)', 'Pick (TO)'): b_pick,
+            tr('Pick / hlava', 'Pick / head'): _prod(b_pick, hc_b_pick),
+            tr('Pack (HU)', 'Pack (HU)'): b_pack,
+            tr('Pack / hlava', 'Pack / head'): _prod(b_pack, hc_b_pack),
+        },
+    ])
+    st.dataframe(tbl, hide_index=True, use_container_width=True)
 
 
 @fast_render
@@ -79,20 +187,20 @@ def render_daily_kpi(df_pick, raw_vekp,
             value=default_date
         )
 
-    sel_date_str       = selected_date.strftime('%Y-%m-%d')
+    sel_date_str        = selected_date.strftime('%Y-%m-%d')
     sel_date_str_nodash = selected_date.strftime('%Y%m%d')
 
     # --- 2. Headcount vstup ---
     with st.expander(tr("👥 Účast (Headcount)", "👥 Headcount"), expanded=False):
         hc_c1, hc_c2 = st.columns(2)
         with hc_c1:
-            st.info(f"**☀️ {tr('Ranní směna', 'Morning Shift')} (5:45 - 13:45)**")
-            hc_r_pick = st.number_input(tr("Pickování - Ranní", "Picking - Morning"), min_value=0.0, step=0.5, key="hc_r_pick")
-            hc_r_pack = st.number_input(tr("Balení - Ranní", "Packing - Morning"),    min_value=0.0, step=0.5, key="hc_r_pack")
+            st.info(f"**☀️ {tr('Směna A', 'Shift A')} (5:45 – 13:45)**")
+            hc_a_pick = st.number_input(tr("Pickování – Směna A", "Picking – Shift A"), min_value=0.0, step=0.5, key="hc_r_pick")
+            hc_a_pack = st.number_input(tr("Balení – Směna A",    "Packing – Shift A"), min_value=0.0, step=0.5, key="hc_r_pack")
         with hc_c2:
-            st.warning(f"**🌆 {tr('Odpolední směna', 'Afternoon Shift')} (13:45 - 21:45)**")
-            hc_o_pick = st.number_input(tr("Pickování - Odpolední", "Picking - Afternoon"), min_value=0.0, step=0.5, key="hc_o_pick")
-            hc_o_pack = st.number_input(tr("Balení - Odpolední", "Packing - Afternoon"),    min_value=0.0, step=0.5, key="hc_o_pack")
+            st.warning(f"**🌆 {tr('Směna B', 'Shift B')} (13:45 – 21:45)**")
+            hc_b_pick = st.number_input(tr("Pickování – Směna B", "Picking – Shift B"), min_value=0.0, step=0.5, key="hc_o_pick")
+            hc_b_pack = st.number_input(tr("Balení – Směna B",    "Packing – Shift B"), min_value=0.0, step=0.5, key="hc_o_pack")
 
     st.divider()
 
@@ -101,16 +209,16 @@ def render_daily_kpi(df_pick, raw_vekp,
     time_col   = 'Confirmation time'
 
     if df_pick is not None and not df_pick.empty:
-        df_p      = df_pick.copy()
-        date_col  = 'Confirmation date' if 'Confirmation date' in df_p.columns else 'Date'
-        time_col  = 'Confirmation time' if 'Confirmation time' in df_p.columns else 'Time'
+        df_p     = df_pick.copy()
+        date_col = 'Confirmation date' if 'Confirmation date' in df_p.columns else 'Date'
+        time_col = 'Confirmation time' if 'Confirmation time' in df_p.columns else 'Time'
 
         if date_col in df_p.columns and time_col in df_p.columns:
             df_p['TempDate'] = pd.to_datetime(df_p[date_col], errors='coerce').dt.strftime('%Y-%m-%d')
             pick_daily = df_p[df_p['TempDate'] == sel_date_str].copy()
             if not pick_daily.empty:
-                pick_daily['Shift'] = pick_daily[time_col].apply(_get_shift)
-                pick_daily['Hour']  = pick_daily[time_col].apply(_get_hour)
+                pick_daily['Shift']    = pick_daily[time_col].apply(_get_shift)
+                pick_daily['Hour']     = pick_daily[time_col].apply(_get_hour)
                 pick_daily['Category'] = pick_daily.get('Queue', tr('Neznámá fronta', 'Unknown Queue'))
 
     # --- 4. PACK DATA pro vybraný den (z předpočítaného df_hu_details) ---
@@ -120,20 +228,17 @@ def render_daily_kpi(df_pick, raw_vekp,
     if (raw_vekp is not None and not raw_vekp.empty
             and df_hu_details is not None and not df_hu_details.empty):
 
-        df_vk = raw_vekp.copy()
+        df_vk      = raw_vekp.copy()
         hu_int_col = next(
-            (c for c in df_vk.columns
-             if 'Internal HU' in str(c) or 'HU-Nummer intern' in str(c)),
+            (c for c in df_vk.columns if 'Internal HU' in str(c) or 'HU-Nummer intern' in str(c)),
             df_vk.columns[0]
         )
         date_col_v = next(
-            (c for c in df_vk.columns
-             if 'CREATED ON' in str(c).upper() or 'ERFASST AM' in str(c).upper()),
+            (c for c in df_vk.columns if 'CREATED ON' in str(c).upper() or 'ERFASST AM' in str(c).upper()),
             None
         )
         time_col_v = next(
-            (c for c in df_vk.columns
-             if 'TIME' in str(c).upper() or 'UHRZEIT' in str(c).upper()),
+            (c for c in df_vk.columns if 'TIME' in str(c).upper() or 'UHRZEIT' in str(c).upper()),
             None
         )
 
@@ -186,16 +291,14 @@ def render_daily_kpi(df_pick, raw_vekp,
             unsafe_allow_html=True
         )
         if not pick_daily.empty:
-            morning_prefix = tr('Ranní', 'Morning')
-            afternoon_prefix = tr('Odpolední', 'Afternoon')
-            r_pick = pick_daily[pick_daily['Shift'].str.startswith(morning_prefix)].shape[0]
-            o_pick = pick_daily[pick_daily['Shift'].str.startswith(afternoon_prefix)].shape[0]
-            st.write(f"**{tr('Ranní', 'Morning')}:** {r_pick} TO "
+            a_pick = pick_daily[pick_daily['Shift'] == 'A'].shape[0]
+            b_pick = pick_daily[pick_daily['Shift'] == 'B'].shape[0]
+            st.write(f"**{tr('Směna A', 'Shift A')}:** {a_pick} TO "
                      f"*({tr('Produktivita:', 'Productivity:')} "
-                     f"{r_pick/hc_r_pick if hc_r_pick > 0 else 0:.1f} / {tr('hlava', 'head')})*")
-            st.write(f"**{tr('Odpolední', 'Afternoon')}:** {o_pick} TO "
+                     f"{a_pick/hc_a_pick if hc_a_pick > 0 else 0:.1f} / {tr('hlava', 'head')})*")
+            st.write(f"**{tr('Směna B', 'Shift B')}:** {b_pick} TO "
                      f"*({tr('Produktivita:', 'Productivity:')} "
-                     f"{o_pick/hc_o_pick if hc_o_pick > 0 else 0:.1f} / {tr('hlava', 'head')})*")
+                     f"{b_pick/hc_b_pick if hc_b_pick > 0 else 0:.1f} / {tr('hlava', 'head')})*")
             st.markdown("---")
             st.markdown(f"**{tr('Rozpad podle front:', 'Breakdown by Queue:')}**")
             q_df = (pick_daily.groupby('Category').size().reset_index(name='TO')
@@ -213,16 +316,14 @@ def render_daily_kpi(df_pick, raw_vekp,
             unsafe_allow_html=True
         )
         if not pack_daily.empty:
-            morning_prefix = tr('Ranní', 'Morning')
-            afternoon_prefix = tr('Odpolední', 'Afternoon')
-            r_pack = pack_daily[pack_daily['Shift'].str.startswith(morning_prefix)].shape[0]
-            o_pack = pack_daily[pack_daily['Shift'].str.startswith(afternoon_prefix)].shape[0]
-            st.write(f"**{tr('Ranní', 'Morning')}:** {r_pack} HU "
+            a_pack = pack_daily[pack_daily['Shift'] == 'A'].shape[0]
+            b_pack = pack_daily[pack_daily['Shift'] == 'B'].shape[0]
+            st.write(f"**{tr('Směna A', 'Shift A')}:** {a_pack} HU "
                      f"*({tr('Produktivita:', 'Productivity:')} "
-                     f"{r_pack/hc_r_pack if hc_r_pack > 0 else 0:.1f} / {tr('hlava', 'head')})*")
-            st.write(f"**{tr('Odpolední', 'Afternoon')}:** {o_pack} HU "
+                     f"{a_pack/hc_a_pack if hc_a_pack > 0 else 0:.1f} / {tr('hlava', 'head')})*")
+            st.write(f"**{tr('Směna B', 'Shift B')}:** {b_pack} HU "
                      f"*({tr('Produktivita:', 'Productivity:')} "
-                     f"{o_pack/hc_o_pack if hc_o_pack > 0 else 0:.1f} / {tr('hlava', 'head')})*")
+                     f"{b_pack/hc_b_pack if hc_b_pack > 0 else 0:.1f} / {tr('hlava', 'head')})*")
             st.markdown("---")
             st.markdown(f"**{tr('Rozpad podle kategorií:', 'Breakdown by Category:')}**")
             c_df = (pack_daily.groupby('Category').size().reset_index(name='HU')
@@ -232,7 +333,16 @@ def render_daily_kpi(df_pick, raw_vekp,
 
     st.divider()
 
-    # --- 6. Hodinový graf ---
+    # --- 6. Porovnání směn A vs B ---
+    _shift_comparison_section(
+        pick_daily, pack_daily,
+        hc_a_pick, hc_a_pack,
+        hc_b_pick, hc_b_pack
+    )
+
+    st.divider()
+
+    # --- 7. Hodinový graf ---
     st.markdown(f"#### 🕒 {tr('Hodinový vývoj skladu (24h)', 'Hourly Warehouse Progress (24h)')}")
     hourly_data = []
     if not pick_daily.empty:
@@ -258,6 +368,13 @@ def render_daily_kpi(df_pick, raw_vekp,
             },
             template='plotly_white'
         )
+        # Hranice směn
+        fig.add_vline(x=5.75,  line_dash='dash', line_color='#f59e0b',
+                      annotation_text='A', annotation_position='top right')
+        fig.add_vline(x=13.75, line_dash='dash', line_color='#10b981',
+                      annotation_text='B', annotation_position='top right')
+        fig.add_vline(x=21.75, line_dash='dash', line_color='#ef4444',
+                      annotation_text=tr('Konec B', 'End B'), annotation_position='top right')
         fig.update_layout(
             xaxis=dict(tickmode='linear', tick0=0, dtick=1, range=[-0.5, 23.5]),
             paper_bgcolor='rgba(0,0,0,0)',
@@ -270,7 +387,7 @@ def render_daily_kpi(df_pick, raw_vekp,
 
     st.divider()
 
-    # --- 7. Power BI export ---
+    # --- 8. Power BI export ---
     st.markdown(f"#### 🔌 {tr('Datový export pro Power BI', 'Data Export for Power BI')}")
     pbi_rows = []
     if not pick_daily.empty:
